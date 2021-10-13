@@ -1,0 +1,3 @@
+obj-intel64
+examples/*.o
+examples/clflush-intrinsic
