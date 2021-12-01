@@ -8,6 +8,7 @@
 #include <sys/wait.h>
 #include <stdlib.h>
 #include <execinfo.h>
+#include <stdint.h>
 
 #include "pin.H"
 
@@ -32,6 +33,42 @@ map<ADDRINT, string> m;
 // set of pairs<start address, end address> of mmap'd pmem pools
 set<pair<ADDRINT, ADDRINT>> s;
 
+// clflush/clflushopt/clwb count
+int flush_count = 0;
+
+/* Get the cache line size from one of the cpus
+ * I'm not positive on the difference between index0, index1, ... index3. Their values (at least on the pmem system) are all 64
+ * https://stackoverflow.com/questions/794632/programmatically-get-the-cache-line-size
+ * */
+unsigned int cache_line_size() {
+    FILE * p = 0;
+    p = fopen("/sys/devices/system/cpu/cpu0/cache/index0/coherency_line_size", "r");
+    unsigned int i = 0;
+    if (p) {
+        fscanf(p, "%d", &i);
+        fclose(p);
+    }
+    return i;
+}
+
+uintptr_t last_b_bits = 0;
+
+/* Clear the last b bits (where b is the number of bits per cache line)
+ * from the address to get the start of this cache line */
+inline VOID * get_cache_line_start(void * address) {
+    if(last_b_bits == 0) {
+	unsigned int line_size = cache_line_size();
+
+	// set the last b bits to be all 1's
+	// 64 -> 1000000b -> 10000000b -> 1111111b
+	last_b_bits = (2 * line_size) - 1;
+    }
+
+    // clear the last b bits from this address
+    // bit arithmetic on void * isn't allowed for some reason, so cast to uintptr_t and back
+    return (void *)( ((uintptr_t)address) & ~(((uintptr_t)last_b_bits)) );
+}
+
 int AfterPoolOpen()
 {
    FILE *fp;
@@ -41,7 +78,7 @@ int AfterPoolOpen()
    fp = fopen ("/tmp/pmem.txt", "r");
 
    if(fp == NULL) {
-	cout << "problem opening pmem.txt" << endl;
+        //cout << "problem opening pmem.txt" << endl;
 	return -1;
    }
 
@@ -55,7 +92,7 @@ int AfterPoolOpen()
       printf("Error: unable to delete the file\n");
    }
 
-   cout << "Pintool pmem is " << (void*)start << ":" << (void*)end << endl;
+   //cout << "Pintool pmem is " << (void*)start << ":" << (void*)end << endl;
 
    s.insert(pair<ADDRINT, ADDRINT>((ADDRINT)start, (ADDRINT)end));
 
@@ -77,10 +114,9 @@ VOID ImageLoad(IMG img, VOID* v)
     {
         for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn))
         {
-            //if (RTN_Name(rtn).compare(rtn_name) == 0 || RTN_Name(rtn).compare("__" + rtn_name) == 0)
             if (RTN_Name(rtn).find(open_rtn_name) != string::npos) // contains substring
             {
-		cout << "Found " << RTN_Name(rtn).c_str() << " in " << IMG_Name(img) << endl;
+		//cout << "Found " << RTN_Name(rtn).c_str() << " in " << IMG_Name(img) << endl;
 
                 ASSERTX(RTN_Valid(rtn));
 
@@ -88,7 +124,7 @@ VOID ImageLoad(IMG img, VOID* v)
                 RTN_InsertCall(rtn, IPOINT_BEFORE, AFUNPTR(AfterPoolOpen), IARG_END);
                 RTN_Close(rtn);
             } else if(RTN_Name(rtn).find(clflush_rtn_name) != string::npos) {
-		cout << "Found " << RTN_Name(rtn).c_str() << " in " << IMG_Name(img) << endl;
+		//cout << "Found " << RTN_Name(rtn).c_str() << " in " << IMG_Name(img) << endl;
                 ASSERTX(RTN_Valid(rtn));
 
                 RTN_Open(rtn);
@@ -129,24 +165,32 @@ VOID RecordMemWrite(VOID* ip, VOID* addr, const CONTEXT* ctxt)
              printf("persistent write to address %p\n", addr);
 	     string backtrace = get_backtrace(ctxt);
 
+	     addr = get_cache_line_start(addr);
+
              // Check to see if there was an entry already with this key
 	     auto it = m.find((ADDRINT)addr);
 	     if (it != m.end()) {
-                 cout << "Write to pmem on address already existing in the map: " << (void*)(it->first) << "\n" << it->second << endl;
+		 // nick
+                 //cout << "Write to pmem on address already existing in the map: " << (void*)(it->first) << "\n" << it->second << endl;
                  m.erase((ADDRINT)addr);
              }
 
-	     m.insert(pair<ADDRINT, string>((ADDRINT)addr, backtrace));
+	     m.insert(pair<ADDRINT, string>(VoidStar2Addrint(addr), backtrace));
         }
     }
 }
 
 VOID flush(VOID* addr)
 {
+    flush_count++;
+
     cout << "clflush called on address " << (void*)(addr) << endl;
-    auto it = m.find((ADDRINT)addr);
+
+    addr = get_cache_line_start(addr);
+
+    auto it = m.find(VoidStar2Addrint(addr));
     if (it == m.end()) {
-        cout << "clflush called with address not stored in the map: " << (void*)(addr) << endl;
+        cout << "clflush called with address (that was converted to cache line start) not stored in the map at: " << (void*)(addr) << endl;
     } else {
         // Remove entry from the map for this address since it will be clflush'd after this function returns
         m.erase(it);
@@ -162,7 +206,7 @@ VOID Instruction(INS ins, VOID* v)
 
     // If this instruction is a clflush or clflushopt, instrument it
     OPCODE op = INS_Opcode(ins);
-    if(op == XED_ICLASS_CLFLUSHOPT || op == XED_ICLASS_CLFLUSH) {
+    if(op == XED_ICLASS_CLFLUSHOPT || op == XED_ICLASS_CLFLUSH || op == XED_ICLASS_CLWB) {
         INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)flush, IARG_MEMORYOP_EA, memOp, IARG_END);
 	return;
     }
@@ -201,6 +245,8 @@ VOID Fini(INT32 code, VOID *v)
         cout << (void*)(it->first) << " : " << it->second << endl;
 	cout << endl;
     }
+
+    cout << "flush count was: " << flush_count << endl;
 }
 
 int main(INT32 argc, CHAR* argv[])
