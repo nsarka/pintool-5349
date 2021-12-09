@@ -20,6 +20,8 @@ PIN_ROOT=/optane/sarkauskas.1/pin make
 PIN_ROOT=/optane/sarkauskas.1/pin /optane/sarkauskas.1/pin/pin -t ./obj-intel64/pmem.so -- /path/to/binary
 ```
 
+## Description
+
 The pintool depends on a patch to write all opened persistent memory files to /tmp/pmem.txt. The pintool 
 will call a function to read and then delete the file after BuddyAllocator::open_impl finishes executing.
 After reading the addresses in /tmp/pmem.txt, it will add them to a set of pair<start_address, end_address>.
