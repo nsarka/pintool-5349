@@ -19,10 +19,10 @@ using std::map;
 using std::set;
 using std::pair;
 
-string open_rtn_name = "open";
-string clflush_rtn_name = "clflush";
+string open_rtn_name;
+string clflush_rtn_name;
 
-KNOB< string > OpenKnobFunctionNameToInstrument(KNOB_MODE_WRITEONCE, "pintool", "open_function_name", "open",
+KNOB< string > OpenKnobFunctionNameToInstrument(KNOB_MODE_WRITEONCE, "pintool", "open_function_name", "open_impl",
                                             "function name to instrument");
 KNOB< string > ClflushKnobFunctionNameToInstrument(KNOB_MODE_WRITEONCE, "pintool", "clflush_function_name", "clflush",
                                             "function name to instrument");
@@ -76,10 +76,15 @@ int AfterPoolOpen()
    int ret;
 
    fp = fopen ("/tmp/pmem.txt", "r");
+   int error_code = errno;
 
    if(fp == NULL) {
-        //cout << "problem opening pmem.txt" << endl;
+	std::cout << "Errors: " << strerror(error_code) << std::endl;
+	perror("Error printed by perror");
+        cout << "problem opening pmem.txt" << endl;
 	return -1;
+   } else {
+	cout << "opened pmem.txt" << endl;
    }
 
    fscanf(fp, "Pmem=%p:%p", &start, &end);
@@ -92,7 +97,7 @@ int AfterPoolOpen()
       printf("Error: unable to delete the file\n");
    }
 
-   //cout << "Pintool pmem is " << (void*)start << ":" << (void*)end << endl;
+   cout << "From pintool, pmem is " << (void*)start << ":" << (void*)end << endl;
 
    s.insert(pair<ADDRINT, ADDRINT>((ADDRINT)start, (ADDRINT)end));
 
@@ -121,14 +126,14 @@ VOID ImageLoad(IMG img, VOID* v)
                 ASSERTX(RTN_Valid(rtn));
 
                 RTN_Open(rtn);
-                RTN_InsertCall(rtn, IPOINT_BEFORE, AFUNPTR(AfterPoolOpen), IARG_END);
+                RTN_InsertCall(rtn, IPOINT_AFTER, AFUNPTR(AfterPoolOpen), IARG_END);
                 RTN_Close(rtn);
             } else if(RTN_Name(rtn).find(clflush_rtn_name) != string::npos) {
 		//cout << "Found " << RTN_Name(rtn).c_str() << " in " << IMG_Name(img) << endl;
                 ASSERTX(RTN_Valid(rtn));
 
                 RTN_Open(rtn);
-                RTN_InsertCall(rtn, IPOINT_BEFORE, AFUNPTR(AfterClflush), IARG_END);
+                RTN_InsertCall(rtn, IPOINT_AFTER, AFUNPTR(AfterClflush), IARG_END);
                 RTN_Close(rtn);
 	    }
         }
@@ -162,7 +167,7 @@ VOID RecordMemWrite(VOID* ip, VOID* addr, const CONTEXT* ctxt)
     // Just record writes to addresses we know are pmem
     for(auto ele : s) {
         if(ele.first <= (ADDRINT) addr && ele.second >= (ADDRINT) addr) {
-             printf("persistent write to address %p\n", addr);
+             //printf("persistent write to address %p\n", addr);
 	     string backtrace = get_backtrace(ctxt);
 
 	     addr = get_cache_line_start(addr);
@@ -170,7 +175,7 @@ VOID RecordMemWrite(VOID* ip, VOID* addr, const CONTEXT* ctxt)
              // Check to see if there was an entry already with this key
 	     auto it = m.find((ADDRINT)addr);
 	     if (it != m.end()) {
-		 // nick
+		 // nick: this print used to show when an address was overwritten without being flushed beforehand
                  //cout << "Write to pmem on address already existing in the map: " << (void*)(it->first) << "\n" << it->second << endl;
                  m.erase((ADDRINT)addr);
              }
@@ -190,7 +195,7 @@ VOID flush(VOID* addr)
 
     auto it = m.find(VoidStar2Addrint(addr));
     if (it == m.end()) {
-        cout << "clflush called with address (that was converted to cache line start) not stored in the map at: " << (void*)(addr) << endl;
+        cout << "Warning: clflush called with address (that was converted to cache line start) not stored in the map at: " << (void*)(addr) << endl;
     } else {
         // Remove entry from the map for this address since it will be clflush'd after this function returns
         m.erase(it);
@@ -239,14 +244,14 @@ VOID Fini(INT32 code, VOID *v)
         cout << (void*)(it->first) << " : " << (void*)(it->second) << endl;
     }
 
+    cout << endl << "flush count was: " << flush_count << endl;
+
     cout << "Backtraces of writes that did not have a corresponding clflush:" << endl;
 
     for(auto it = m.begin(); it != m.end(); it++) {
         cout << (void*)(it->first) << " : " << it->second << endl;
 	cout << endl;
     }
-
-    cout << "flush count was: " << flush_count << endl;
 }
 
 int main(INT32 argc, CHAR* argv[])
@@ -282,7 +287,6 @@ int main(INT32 argc, CHAR* argv[])
     PIN_AddFiniFunction(Fini, 0);
 
     // Start the program, never returns
-    //
     PIN_StartProgram();
 
     return 0;

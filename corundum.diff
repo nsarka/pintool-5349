@@ -1,0 +1,36 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 74fc137..05e0a42 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -30,8 +30,8 @@ use_pspd = []
+ use_vspd = []
+ no_persist = []
+ fix_persist = []
+-shadow = []
+-fix_shadow = []
++#shadow = []
++#fix_shadow = []
+ no_log_rc = []
+ no_flush_alloc = []
+ no_flush_updates = []
+diff --git a/src/alloc/alg/buddy.rs b/src/alloc/alg/buddy.rs
+index b32ec7e..9543650 100644
+--- a/src/alloc/alg/buddy.rs
++++ b/src/alloc/alg/buddy.rs
+@@ -1272,6 +1272,16 @@ macro_rules! pool {
+     
+                                     //eprintln!("{:x?}, {:x?}, {:x?}, {:x?}, {:x?}", NV_BUDDY_START, NV_BUDDY_END, BUDDY_START, BUDDY_END, (BUDDY_END - BUDDY_START) as usize);
+                                 }
++
++
++                                // Write start and end address to the file
++                                let s = String::from(format!("Pmem={:#x}:{:#x}", Self::start(), Self::end()));
++                                println!("{}", s);
++                                use std::fs::File;
++                                use std::io::Write;
++                                let mut file = File::create("/tmp/pmem.txt").expect("Unable to create pmem.txt");
++                                file.write_all(s.as_bytes()).expect("couldnt write pmem.txt");
++
+     
+                                 let mut vdata = match VDATA.lock() {
+                                     Ok(g) => g,
