@@ -8,7 +8,7 @@ APP=/optane/sarkauskas.1/tmp_proj1
 pushd .
 cp ./corundum.diff $CORUNDUM
 cd $CORUNDUM
-git checkout .
+#git checkout .
 git apply ./corundum.diff
 cargo build
 popd
